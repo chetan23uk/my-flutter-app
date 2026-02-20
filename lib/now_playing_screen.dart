@@ -1,27 +1,33 @@
 // lib/now_playing_screen.dart
+import 'dart:async';
 import 'dart:math' as math;
+
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'widgets/now_playing_info_sheet.dart';
 
 import 'ads/ad_ids.dart';
 import 'ads/banner_ad_widget.dart';
 import 'audio_utils.dart';
 import 'playing_manager.dart';
 
-import 'package:google_mobile_ads/google_mobile_ads.dart';
-
 class AdaptiveBanner extends StatefulWidget {
   const AdaptiveBanner({
     super.key,
     required this.adUnitId,
+    this.placement = 'now_playing',
+    this.slot = 0,
     this.fallback = AdSize.banner,
   });
 
   final String adUnitId;
+  final String placement;
+  final int slot;
   final AdSize fallback;
 
   @override
@@ -37,9 +43,14 @@ class _AdaptiveBannerState extends State<AdaptiveBanner> {
     _lastWidth = width;
 
     try {
+      // ✅ FIX: this returns Future<AnchoredAdaptiveBannerAdSize?>, not AdSize
       final s = await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(width);
       if (!mounted) return;
-      setState(() => _size = s ?? widget.fallback);
+      setState(() {
+        _size = (s == null)
+            ? widget.fallback
+            : AdSize(width: s.width, height: s.height);
+      });
     } catch (_) {
       if (!mounted) return;
       setState(() => _size = widget.fallback);
@@ -56,6 +67,8 @@ class _AdaptiveBannerState extends State<AdaptiveBanner> {
         }
         return BannerAdWidget(
           adUnitId: widget.adUnitId,
+          placement: widget.placement,
+          slot: widget.slot,
           size: _size ?? widget.fallback,
         );
       },
@@ -82,16 +95,26 @@ class NowPlayingScreen extends StatefulWidget {
 }
 
 class _NowPlayingScreenState extends State<NowPlayingScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _spinCtrl;
+  late final AnimationController _neonCtrl;
+  StreamSubscription<bool>? _spinSub;
+
   AudioPlayer get _player => PlayerManager.I.player;
 
   @override
   void initState() {
     super.initState();
-    _spinCtrl =
-    AnimationController(vsync: this, duration: const Duration(seconds: 18))
-      ..repeat();
+
+    _spinCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 18),
+    );
+
+    _neonCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6), // neon ring speed
+    );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.playlist != null && widget.playlist!.isNotEmpty) {
@@ -115,6 +138,25 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
       }
     });
 
+    // ✅ Spin + neon only while playing
+    _spinSub = _player.playingStream.listen((playing) {
+      if (!mounted) return;
+
+      if (playing) {
+        if (!_spinCtrl.isAnimating) _spinCtrl.repeat();
+        if (!_neonCtrl.isAnimating) _neonCtrl.repeat();
+      } else {
+        if (_spinCtrl.isAnimating) _spinCtrl.stop(canceled: false);
+        if (_neonCtrl.isAnimating) _neonCtrl.stop(canceled: false);
+      }
+    });
+
+    // If already playing at open
+    if (_player.playing) {
+      _spinCtrl.repeat();
+      _neonCtrl.repeat();
+    }
+
     _player.playerStateStream.listen((_) {
       if (mounted) setState(() {});
     });
@@ -125,7 +167,9 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   @override
   void dispose() {
+    _spinSub?.cancel();
     _spinCtrl.dispose();
+    _neonCtrl.dispose();
     super.dispose();
   }
 
@@ -154,8 +198,12 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     final song = _currentSong;
     final media = _currentMediaItem;
 
-    final title = song != null ? cleanTitle(song) : (media?.title.isNotEmpty == true ? media!.title : 'Unknown');
-    final artist = song != null ? artistOf(song) : (media?.artist?.isNotEmpty == true ? media!.artist! : 'Received');
+    final title = song != null
+        ? cleanTitle(song)
+        : (media?.title.isNotEmpty == true ? media!.title : 'Unknown');
+    final artist = song != null
+        ? artistOf(song)
+        : (media?.artist?.isNotEmpty == true ? media!.artist! : 'Received');
 
     return Scaffold(
       body: SafeArea(
@@ -174,12 +222,18 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                     ),
                     const Spacer(),
                     IconButton(
-                      icon: const Icon(Icons.more_vert),
+                      icon: const Icon(Icons.info_outline_rounded),
                       onPressed: () {
                         final s = _currentSong;
-                        if (s != null) { _openSongDetailsSheet(s); return; }
+                        if (s != null) {
+                          _openSongDetailsSheet(s);
+                          return;
+                        }
                         final m = _currentMediaItem;
-                        if (m != null) { _openMediaDetailsSheet(m); return; }
+                        if (m != null) {
+                          _openMediaDetailsSheet(m);
+                          return;
+                        }
                       },
                     ),
                   ],
@@ -187,7 +241,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 6),
-                  child: AdaptiveBanner(adUnitId: AdIds.banner),
+                  child: AdaptiveBanner(
+                    adUnitId: AdIds.banner,
+                    placement: 'now_playing_top',
+                    slot: 0,
+                  ),
                 ),
 
                 // Title & Artist
@@ -197,10 +255,21 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
-                          Text(artist, maxLines: 1, overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Colors.white60)),
+                          Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            artist,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white60),
+                          ),
                         ],
                       ),
                     ),
@@ -212,8 +281,12 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                         }
                       },
                       icon: Icon(
-                        PlayerManager.I.isFavorite(song) ? Icons.favorite : Icons.favorite_border,
-                        color: PlayerManager.I.isFavorite(song) ? Colors.redAccent : Colors.white,
+                        PlayerManager.I.isFavorite(song)
+                            ? Icons.favorite
+                            : Icons.favorite_border,
+                        color: PlayerManager.I.isFavorite(song)
+                            ? Colors.redAccent
+                            : Colors.white,
                       ),
                     ),
                   ],
@@ -229,26 +302,169 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                     child: Stack(
                       alignment: Alignment.center,
                       children: [
-                        const SizedBox(width: 260, height: 260, child: CircularProgressIndicator(value: 1, strokeWidth: 6, valueColor: AlwaysStoppedAnimation(Colors.white12))),
+                        const SizedBox(
+                          width: 260,
+                          height: 260,
+                          child: CircularProgressIndicator(
+                            value: 1,
+                            strokeWidth: 6,
+                            valueColor: AlwaysStoppedAnimation(Colors.white12),
+                          ),
+                        ),
                         StreamBuilder<Duration>(
                           stream: _player.positionStream,
                           builder: (_, snap) {
                             final pos = snap.data ?? Duration.zero;
                             final total = _player.duration ?? Duration.zero;
-                            final progress = total.inMilliseconds == 0 ? 0.0 : pos.inMilliseconds / total.inMilliseconds;
-                            return SizedBox(width: 260, height: 260, child: CircularProgressIndicator(value: progress.clamp(0.0, 1.0), strokeWidth: 6, valueColor: AlwaysStoppedAnimation(Theme.of(context).colorScheme.primary)));
+                            final progress = total.inMilliseconds == 0
+                                ? 0.0
+                                : pos.inMilliseconds / total.inMilliseconds;
+                            return SizedBox(
+                              width: 260,
+                              height: 260,
+                              child: CircularProgressIndicator(
+                                value: progress.clamp(0.0, 1.0),
+                                strokeWidth: 6,
+                                valueColor: AlwaysStoppedAnimation(
+                                  Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
+                            );
                           },
                         ),
+
+                        // ✅ SMOOTH NEON ORBIT (rotates while playing)
+                        RotationTransition(
+                          turns: _neonCtrl,
+                          child: IgnorePointer(
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                // soft glow base
+                                Container(
+                                  width: 248,
+                                  height: 248,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary
+                                            .withValues(alpha: 0.22),
+                                        blurRadius: 22,
+                                        spreadRadius: 2,
+                                      ),
+                                      BoxShadow(
+                                        color: Colors.cyanAccent
+                                            .withValues(alpha: 0.14),
+                                        blurRadius: 26,
+                                        spreadRadius: 1,
+                                      ),
+                                      BoxShadow(
+                                        color: Colors.pinkAccent
+                                            .withValues(alpha: 0.10),
+                                        blurRadius: 26,
+                                        spreadRadius: 1,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                // smooth neon ring (sweep)
+                                Container(
+                                  width: 248,
+                                  height: 248,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    gradient: SweepGradient(
+                                      colors: [
+                                        Colors.transparent,
+                                        Theme.of(context)
+                                            .colorScheme
+                                            .primary
+                                            .withValues(alpha: 0.95),
+                                        Colors.cyanAccent
+                                            .withValues(alpha: 0.80),
+                                        Colors.transparent,
+                                        Colors.pinkAccent
+                                            .withValues(alpha: 0.75),
+                                        Colors.transparent,
+                                      ],
+                                      stops: const [
+                                        0.0,
+                                        0.18,
+                                        0.30,
+                                        0.55,
+                                        0.72,
+                                        1.0
+                                      ],
+                                    ),
+                                  ),
+                                ),
+
+                                // subtle inner ring
+                                Container(
+                                  width: 244,
+                                  height: 244,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color:
+                                      Colors.white.withValues(alpha: 0.06),
+                                      width: 1,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        // Disk border rotation
                         RotationTransition(
                           turns: _spinCtrl,
-                          child: Container(width: 230, height: 230, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white12, width: 2))),
+                          child: Container(
+                            width: 230,
+                            height: 230,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border:
+                              Border.all(color: Colors.white12, width: 2),
+                            ),
+                          ),
                         ),
-                        ClipOval(
-                          child: SizedBox(
-                            width: 210, height: 210,
-                            child: (song == null)
-                                ? Container(color: Colors.white10, child: const Icon(Icons.music_note, color: Colors.white70, size: 54))
-                                : QueryArtworkWidget(id: song.id, type: ArtworkType.AUDIO, keepOldArtwork: true, nullArtworkWidget: Container(color: Colors.white10, child: const Icon(Icons.music_note, color: Colors.white70, size: 28))),
+
+                        // ✅ Artwork rotates with disk (while playing)
+                        RotationTransition(
+                          turns: _spinCtrl,
+                          child: ClipOval(
+                            child: SizedBox(
+                              width: 210,
+                              height: 210,
+                              child: (song == null)
+                                  ? Container(
+                                color: Colors.white10,
+                                child: const Icon(
+                                  Icons.music_note,
+                                  color: Colors.white70,
+                                  size: 54,
+                                ),
+                              )
+                                  : QueryArtworkWidget(
+                                id: song.id,
+                                type: ArtworkType.AUDIO,
+                                keepOldArtwork: true,
+                                nullArtworkWidget: Container(
+                                  color: Colors.white10,
+                                  child: const Icon(
+                                    Icons.music_note,
+                                    color: Colors.white70,
+                                    size: 28,
+                                  ),
+                                ),
+                              ),
+                            ),
                           ),
                         ),
                       ],
@@ -257,7 +473,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 ),
 
                 const SizedBox(height: 16),
-                const AdaptiveBanner(adUnitId: AdIds.banner),
+                const AdaptiveBanner(
+                  adUnitId: AdIds.banner,
+                  placement: 'now_playing_mid',
+                  slot: 1,
+                ),
 
                 // Timer Text
                 StreamBuilder<Duration>(
@@ -265,7 +485,12 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                   builder: (_, snap) {
                     final pos = snap.data ?? Duration.zero;
                     final total = _player.duration ?? Duration.zero;
-                    return Center(child: Text('${_mmss(pos)} / ${_mmss(total)}', style: const TextStyle(color: Colors.white60)));
+                    return Center(
+                      child: Text(
+                        '${_mmss(pos)} / ${_mmss(total)}',
+                        style: const TextStyle(color: Colors.white60),
+                      ),
+                    );
                   },
                 ),
 
@@ -277,10 +502,14 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                   builder: (_, snap) {
                     final pos = snap.data ?? Duration.zero;
                     final total = _player.duration ?? Duration.zero;
-                    final max = total.inMilliseconds.clamp(0, 86400000).toDouble();
+                    final max =
+                    total.inMilliseconds.clamp(0, 86400000).toDouble();
                     return Slider(
-                      min: 0, max: max, value: pos.inMilliseconds.clamp(0, max).toDouble(),
-                      onChanged: (v) => _player.seek(Duration(milliseconds: v.toInt())),
+                      min: 0,
+                      max: max,
+                      value: pos.inMilliseconds.clamp(0, max).toDouble(),
+                      onChanged: (v) =>
+                          _player.seek(Duration(milliseconds: v.toInt())),
                       activeColor: Theme.of(context).colorScheme.primary,
                     );
                   },
@@ -290,19 +519,78 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    IconButton(icon: Icon(Icons.shuffle, color: _player.shuffleModeEnabled ? Theme.of(context).colorScheme.primary : null), onPressed: () async { await _player.setShuffleModeEnabled(!_player.shuffleModeEnabled); setState(() {}); }),
-                    IconButton(iconSize: 28, icon: const Icon(Icons.skip_previous_rounded), onPressed: _player.hasPrevious ? _player.seekToPrevious : null),
-                    GestureDetector(
-                      onTap: () async { await PlayerManager.I.togglePlayPause(); setState(() {}); },
-                      child: Container(width: 72, height: 72, decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white), child: Icon(isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 42, color: Colors.black)),
+                    IconButton(
+                      icon: Icon(
+                        Icons.shuffle,
+                        color: _player.shuffleModeEnabled
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
+                      onPressed: () async {
+                        await _player.setShuffleModeEnabled(
+                            !_player.shuffleModeEnabled);
+                        setState(() {});
+                      },
                     ),
-                    IconButton(iconSize: 28, icon: const Icon(Icons.skip_next_rounded), onPressed: _player.hasNext ? _player.seekToNext : null),
-                    IconButton(icon: Icon(_player.loopMode == LoopMode.one ? Icons.repeat_one : Icons.repeat, color: _player.loopMode == LoopMode.off ? null : Theme.of(context).colorScheme.primary), onPressed: () async { final next = _player.loopMode == LoopMode.off ? LoopMode.one : (_player.loopMode == LoopMode.one ? LoopMode.all : LoopMode.off); await _player.setLoopMode(next); setState(() {}); }),
+                    IconButton(
+                      iconSize: 28,
+                      icon: const Icon(Icons.skip_previous_rounded),
+                      onPressed:
+                      _player.hasPrevious ? _player.seekToPrevious : null,
+                    ),
+                    GestureDetector(
+                      onTap: () async {
+                        await PlayerManager.I.togglePlayPause();
+                        setState(() {});
+                      },
+                      child: Container(
+                        width: 72,
+                        height: 72,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white,
+                        ),
+                        child: Icon(
+                          isPlaying
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded,
+                          size: 42,
+                          color: Colors.black,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      iconSize: 28,
+                      icon: const Icon(Icons.skip_next_rounded),
+                      onPressed: _player.hasNext ? _player.seekToNext : null,
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _player.loopMode == LoopMode.one
+                            ? Icons.repeat_one
+                            : Icons.repeat,
+                        color: _player.loopMode == LoopMode.off
+                            ? null
+                            : Theme.of(context).colorScheme.primary,
+                      ),
+                      onPressed: () async {
+                        final next = _player.loopMode == LoopMode.off
+                            ? LoopMode.one
+                            : (_player.loopMode == LoopMode.one
+                            ? LoopMode.all
+                            : LoopMode.off);
+                        await _player.setLoopMode(next);
+                        setState(() {});
+                      },
+                    ),
                   ],
                 ),
 
                 const SizedBox(height: 16),
-                Text('now_next_songs_title'.tr(), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                Text(
+                  'now_next_songs_title'.tr(),
+                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+                ),
                 const SizedBox(height: 8),
 
                 // Next Songs List with Ad after 7 items
@@ -311,21 +599,43 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                   stream: _player.sequenceStateStream,
                   builder: (_, snap) {
                     final seq = snap.data?.sequence ?? [];
-                    final items = seq.map((e) => e.tag).whereType<MediaItem>().toList();
+                    final items = seq
+                        .map((e) => e.tag)
+                        .whereType<MediaItem>()
+                        .toList();
                     final count = items.isEmpty ? seq.length : items.length;
                     return ListView.builder(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       itemCount: count + (count > 7 ? 1 : 0),
                       itemBuilder: (_, i) {
-                        if (i == 7) return const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: AdaptiveBanner(adUnitId: AdIds.banner));
+                        if (i == 7) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: AdaptiveBanner(
+                              adUnitId: AdIds.banner,
+                              placement: 'now_playing_next',
+                              slot: 2,
+                            ),
+                          );
+                        }
                         final actualIdx = i > 7 ? i - 1 : i;
-                        final it = items.isNotEmpty ? items[actualIdx] : null;
+                        final it =
+                        items.isNotEmpty ? items[actualIdx] : null;
                         return ListTile(
                           leading: const Icon(Icons.music_note),
-                          title: Text(it?.title ?? 'Track ${actualIdx + 1}', maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text(it?.artist ?? 'Received', maxLines: 1, overflow: TextOverflow.ellipsis),
-                          onTap: () => _player.seek(Duration.zero, index: actualIdx),
+                          title: Text(
+                            it?.title ?? 'Track ${actualIdx + 1}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            it?.artist ?? 'Received',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          onTap: () =>
+                              _player.seek(Duration.zero, index: actualIdx),
                         );
                       },
                     );
@@ -334,16 +644,35 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                     : ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: widget.playlist!.length + (widget.playlist!.length > 7 ? 1 : 0),
+                  itemCount: widget.playlist!.length +
+                      (widget.playlist!.length > 7 ? 1 : 0),
                   itemBuilder: (_, i) {
-                    if (i == 7) return const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: AdaptiveBanner(adUnitId: AdIds.banner));
+                    if (i == 7) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: AdaptiveBanner(
+                          adUnitId: AdIds.banner,
+                          placement: 'now_playing_next',
+                          slot: 3,
+                        ),
+                      );
+                    }
                     final actualIdx = i > 7 ? i - 1 : i;
                     final s = widget.playlist![actualIdx];
                     return ListTile(
                       leading: const Icon(Icons.music_note),
-                      title: Text(cleanTitle(s), maxLines: 1, overflow: TextOverflow.ellipsis),
-                      subtitle: Text(artistOf(s), maxLines: 1, overflow: TextOverflow.ellipsis),
-                      onTap: () => _player.seek(Duration.zero, index: actualIdx),
+                      title: Text(
+                        cleanTitle(s),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        artistOf(s),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onTap: () =>
+                          _player.seek(Duration.zero, index: actualIdx),
                     );
                   },
                 ),
@@ -356,8 +685,14 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   }
 
   // Details Sheets Helpers
-  void _openSongDetailsSheet(SongModel song) { /* ... same as before ... */ }
-  void _openMediaDetailsSheet(MediaItem item) { /* ... same as before ... */ }
+  void _openSongDetailsSheet(SongModel song) {
+    NowPlayingInfoSheet.show(context, song: song);
+  }
+
+  void _openMediaDetailsSheet(MediaItem item) {
+    NowPlayingInfoSheet.show(context, mediaItem: item);
+  }
+
   String _mmss(Duration d) {
     final m = d.inMinutes.remainder(60).toString();
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');

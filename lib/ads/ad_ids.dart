@@ -1,4 +1,4 @@
 class AdIds {
-  static const banner = 'ca-app-pub-3940256099942544/6300978111';
-  static const interstitial = 'ca-app-pub-3940256099942544/1033173712';
+  static const banner = 'ca-app-pub-9784264014402953/2119968970';
+  static const interstitial = 'ca-app-pub-9784264014402953/4554560626';
 }

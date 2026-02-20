@@ -16,8 +16,10 @@ class PlayerManager {
 
   final AudioPlayer _player = AudioPlayer();
 
-  /// Single queue used everywhere in the app.
-  final ConcatenatingAudioSource _playlistSource =
+  /// ✅ NOTE:
+  /// We DO NOT keep a single fixed queue object anymore.
+  /// We keep a reference to the CURRENT queue source, so all queue ops use it.
+  ConcatenatingAudioSource _playlistSource =
   ConcatenatingAudioSource(children: []);
 
   /// Copy of the songs in [_playlistSource] in the same order.
@@ -25,7 +27,7 @@ class PlayerManager {
 
   bool _initialized = false;
 
-  // ❤️ FAVORITES (ADDED – nothing else changed)
+  // ❤️ FAVORITES
   final Set<int> _favoriteSongIds = {};
 
   AudioPlayer get player => _player;
@@ -41,26 +43,52 @@ class PlayerManager {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
 
-    // Bind player to our queue source.
-    await _player.setAudioSource(_playlistSource);
+    // ✅ Always start with shuffle OFF to prevent background crash
+    await _player.setShuffleModeEnabled(false);
+
     _initialized = true;
   }
 
   // ------------------- helpers -------------------
 
   Uri _uriFromSong(SongModel song) {
-    final data = song.data;
+    final data = (song.data).trim();
 
+    // ✅ 1) If data is a real file path and exists, prefer it.
+    if (data.startsWith('/')) {
+      final f = File(data);
+      if (f.existsSync()) return Uri.file(data);
+    }
+
+    // ✅ 2) Otherwise use song.uri (content://...)
+    final u = song.uri;
+    if (u != null && u.isNotEmpty) {
+      return Uri.parse(u);
+    }
+
+    // ✅ 3) Fallback: if data already a uri, use it
     if (data.startsWith('content://') || data.startsWith('file://')) {
       return Uri.parse(data);
     }
 
+    // ✅ 4) Final fallback
     return Uri.file(data);
   }
 
-  /// Convert song -> audio source with BOTH:
-  /// - MediaItem tag (notification/lockscreen)
-  /// - our own MediaItemTag for UI (via _currentSongs list)
+
+  String _safeTitle(SongModel song) {
+    final t = song.title.trim();
+    if (t.isNotEmpty && t.toLowerCase() != '<unknown>') return t;
+    try {
+      return Uri.file(song.data).pathSegments.isNotEmpty
+          ? Uri.file(song.data).pathSegments.last
+          : song.data.split('/').last;
+    } catch (_) {
+      return song.data.split('/').last;
+    }
+  }
+
+  /// Convert song -> audio source with notification metadata.
   AudioSource _toSource(SongModel song) {
     final uri = _uriFromSong(song);
 
@@ -68,12 +96,22 @@ class PlayerManager {
       uri,
       tag: MediaItem(
         id: song.id.toString(),
-        title: song.title,
-        artist: song.artist ?? "Unknown Artist",
+        title: _safeTitle(song),
+        artist: (song.artist?.isNotEmpty ?? false) ? song.artist! : "Unknown Artist",
         album: song.album ?? "",
-        artUri: Uri.file(song.data),
+        // ✅ Keep artUri null (audio file path is NOT an image)
+        artUri: null,
       ),
     );
+  }
+
+  Uri _parseAnyUri(String input) {
+    final s = input.trim();
+    if (s.startsWith('content://') || s.startsWith('file://')) {
+      return Uri.parse(s);
+    }
+    if (s.startsWith('/')) return Uri.file(s);
+    return Uri.parse(s);
   }
 
   // ------------------- public controls -------------------
@@ -83,21 +121,103 @@ class PlayerManager {
     await _ensureInit();
     if (songs.isEmpty) return;
 
+    // ✅ Critical: shuffle OFF before changing source (prevents RangeError)
+    if (_player.shuffleModeEnabled) {
+      await _player.setShuffleModeEnabled(false);
+    }
+
     final idx =
     (startIndex < 0 || startIndex >= songs.length) ? 0 : startIndex;
-
-    await _player.stop();
-    await _playlistSource.clear();
 
     _currentSongs
       ..clear()
       ..addAll(songs);
 
-    final sources =
-    _currentSongs.map<AudioSource>((s) => _toSource(s)).toList();
+    final sources = _currentSongs.map<AudioSource>(_toSource).toList();
+
+    // ✅ Build NEW queue source (no empty-window clear/addAll)
+    _playlistSource = ConcatenatingAudioSource(children: sources);
 
     await _player.setAudioSource(
-      ConcatenatingAudioSource(children: sources),
+      _playlistSource,
+      initialIndex: idx,
+      initialPosition: Duration.zero,
+    );
+
+    await _player.play();
+  }
+
+  /// Open-with / external single file play
+  Future<void> playExternalUri(String uriOrPath) async {
+    await _ensureInit();
+
+    if (_player.shuffleModeEnabled) {
+      await _player.setShuffleModeEnabled(false);
+    }
+
+    _currentSongs.clear();
+
+    final uri = _parseAnyUri(uriOrPath);
+    final title = uri.pathSegments.isNotEmpty ? uri.pathSegments.last : 'Audio';
+
+    final src = AudioSource.uri(
+      uri,
+      tag: MediaItem(
+        id: uri.toString(),
+        title: title,
+        artist: 'Received',
+        album: '',
+        artUri: null,
+      ),
+    );
+
+    _playlistSource = ConcatenatingAudioSource(children: [src]);
+
+    await _player.setAudioSource(
+      _playlistSource,
+      initialIndex: 0,
+      initialPosition: Duration.zero,
+    );
+
+    await _player.play();
+  }
+
+  /// Play transferred/file playlist (paths)
+  Future<void> playFilePlaylist(List<String> paths, {int startIndex = 0}) async {
+    if (paths.isEmpty) return;
+    await _ensureInit();
+
+    if (_player.shuffleModeEnabled) {
+      await _player.setShuffleModeEnabled(false);
+    }
+
+    _currentSongs.clear();
+
+    final children = <AudioSource>[];
+    for (final p in paths) {
+      final uri = _parseAnyUri(p);
+      final title = uri.pathSegments.isNotEmpty ? uri.pathSegments.last : p.split('/').last;
+
+      children.add(
+        AudioSource.uri(
+          uri,
+          tag: MediaItem(
+            id: uri.toString(),
+            title: title,
+            artist: 'Received',
+            album: '',
+            artUri: null,
+          ),
+        ),
+      );
+    }
+
+    final idx = (startIndex < 0 || startIndex >= children.length) ? 0 : startIndex;
+
+    _playlistSource = ConcatenatingAudioSource(children: children);
+
+    await _player.setAudioSource(
+      _playlistSource,
       initialIndex: idx,
       initialPosition: Duration.zero,
     );
@@ -118,6 +238,8 @@ class PlayerManager {
     (_player.currentIndex! + 1).clamp(0, _currentSongs.length);
 
     _currentSongs.insert(nextIndex, song);
+
+    // ✅ IMPORTANT: insert into CURRENT playlistSource
     await _playlistSource.insert(nextIndex, _toSource(song));
   }
 
@@ -131,6 +253,8 @@ class PlayerManager {
     }
 
     _currentSongs.add(song);
+
+    // ✅ IMPORTANT: add into CURRENT playlistSource
     await _playlistSource.add(_toSource(song));
   }
 
@@ -145,6 +269,8 @@ class PlayerManager {
     }
 
     _currentSongs.addAll(songs);
+
+    // ✅ IMPORTANT: addAll into CURRENT playlistSource
     await _playlistSource.addAll(
       songs.map<AudioSource>(_toSource).toList(),
     );
@@ -175,16 +301,12 @@ class PlayerManager {
   /// Delete audio file
   Future<bool> deleteFile(SongModel song) async {
     try {
-      // ✅ Prefer URI delete (Android 10/11+ safe)
       final uri = song.uri;
       if (uri != null && uri.isNotEmpty) {
         final ok = await MediaDeleteService.deleteUris([uri]);
         if (ok) return true;
-        // if user cancelled on 11+ -> ok=false; don't force delete
-        // But Android 9 fallback needs File.delete:
       }
 
-      // ✅ Fallback (Android 9 or when URI method not supported)
       final f = File(song.data);
       if (await f.exists()) {
         await f.delete();
@@ -196,8 +318,7 @@ class PlayerManager {
     }
   }
 
-
-  // ------------------- ❤️ FAVORITES (ADDED ONLY) -------------------
+  // ------------------- ❤️ FAVORITES -------------------
 
   bool isFavorite(SongModel? song) {
     if (song == null) return false;
@@ -229,10 +350,10 @@ class PlayerManager {
       );
     }
 
-    // ✅ Transferred / file playlist (MediaItem tag from just_audio_background)
+    // ✅ File / external playlist (MediaItem tag from just_audio_background)
     try {
       final seq = _player.sequence;
-      if (seq!.isEmpty) return null;
+      if (seq == null || seq.isEmpty) return null;
       if (index < 0 || index >= seq.length) return null;
 
       final tag = seq[index].tag;
@@ -250,33 +371,10 @@ class PlayerManager {
     return null;
   }
 
-
   MediaItemTag? get currentTag {
     final idx = _player.currentIndex;
     if (idx == null) return null;
     return tagOfIndex(idx);
-  }
-  Future<void> playFilePlaylist(List<String> paths, {int startIndex = 0}) async {
-    if (paths.isEmpty) return;
-    await _ensureInit();
-
-    final children = <AudioSource>[];
-    for (final path in paths) {
-      final uri = Uri.file(path);
-      children.add(AudioSource.uri(
-        uri,
-        tag: MediaItem(
-          id: uri.toString(),
-          title: path.split('/').last,
-          artist: 'Received',
-        ),
-      ));
-    }
-
-    final src = ConcatenatingAudioSource(children: children);
-
-    await _player.setAudioSource(src, initialIndex: startIndex);
-    await _player.play();
   }
 }
 

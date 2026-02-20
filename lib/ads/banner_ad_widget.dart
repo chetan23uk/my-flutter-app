@@ -1,18 +1,25 @@
-import 'dart:math';
+// lib/ads/banner_ad_widget.dart
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 class BannerAdWidget extends StatefulWidget {
   final String adUnitId;
 
-  /// ✅ OPTIONAL: agar aap kisi jagah fixed size chahte ho to pass kar sakte ho.
-  /// agar null hua to random size choose hoga.
-  final AdSize? size;
+  /// ✅ Unique placement per screen/list
+  final String placement;
+
+  /// ✅ Stable slot within the same placement (0..N-1)
+  final int slot;
+
+  /// ✅ Fixed size (recommended). Default: banner
+  final AdSize size;
 
   const BannerAdWidget({
     super.key,
     required this.adUnitId,
-    this.size, // ✅ optional (no more required error)
+    required this.placement,
+    required this.slot,
+    this.size = AdSize.banner,
   });
 
   @override
@@ -20,57 +27,100 @@ class BannerAdWidget extends StatefulWidget {
 }
 
 class _BannerAdWidgetState extends State<BannerAdWidget> {
-  BannerAd? _bannerAd;
-  bool _isLoaded = false;
+  BannerAd? _ad;
+  bool _loaded = false;
 
-  late final AdSize _adSize;
+  late String _baseKey;
+
+  String _buildBaseKey() {
+    return '${widget.adUnitId}#${widget.placement}#${widget.slot}'
+        '#${widget.size.width}x${widget.size.height}';
+  }
+
+  void _disposeAd() {
+    try {
+      _ad?.dispose();
+    } catch (_) {}
+    _ad = null;
+    _loaded = false;
+  }
+
+  void _loadAd() {
+    _baseKey = _buildBaseKey();
+
+    _disposeAd();
+
+    final ad = BannerAd(
+      adUnitId: widget.adUnitId,
+      size: widget.size,
+      request: const AdRequest(),
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (!mounted) {
+            ad.dispose();
+            return;
+          }
+          setState(() {
+            _ad = ad as BannerAd;
+            _loaded = true;
+          });
+        },
+        onAdFailedToLoad: (ad, err) {
+          ad.dispose();
+          if (!mounted) return;
+          setState(() {
+            _ad = null;
+            _loaded = false;
+          });
+        },
+      ),
+    );
+
+    ad.load();
+  }
 
   @override
   void initState() {
     super.initState();
-
-    // ✅ If size provided -> use it, else random (aayat/chakor)
-    _adSize = widget.size ?? (Random().nextBool() ? AdSize.banner : AdSize.mediumRectangle);
-
     _loadAd();
   }
 
-  void _loadAd() {
-    _bannerAd = BannerAd(
-      adUnitId: widget.adUnitId,
-      size: _adSize,
-      request: const AdRequest(),
-      listener: BannerAdListener(
-        onAdLoaded: (ad) {
-          if (!mounted) return;
-          setState(() => _isLoaded = true);
-        },
-        onAdFailedToLoad: (ad, err) {
-          // ignore: avoid_print
-          print('BANNER failed: code=${err.code}, message=${err.message}');
-          ad.dispose();
-        },
-      ),
-    )..load();
+  @override
+  void didUpdateWidget(covariant BannerAdWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final newBase = _buildBaseKey();
+    final oldBase = _baseKey;
+
+    // ✅ If placement/slot/size/adUnit changed, create NEW BannerAd instance
+    if (newBase != oldBase) {
+      _loadAd();
+    }
   }
 
   @override
   void dispose() {
-    _bannerAd?.dispose();
+    _disposeAd();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_isLoaded || _bannerAd == null) {
+    final ad = _ad;
+
+    if (!_loaded || ad == null) {
       return const SizedBox.shrink();
     }
 
     return Center(
       child: SizedBox(
-        width: _bannerAd!.size.width.toDouble(),
-        height: _bannerAd!.size.height.toDouble(),
-        child: AdWidget(ad: _bannerAd!),
+        width: ad.size.width.toDouble(),
+        height: ad.size.height.toDouble(),
+        // ✅ Key ensures widget tree doesn't try to reuse same ad widget incorrectly
+        child: AdWidget(
+          key: ValueKey(ad),
+          ad: ad,
+        ),
       ),
     );
   }

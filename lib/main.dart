@@ -5,6 +5,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
+import 'ads/interstitial_helper.dart';
 import 'splash_screen.dart';
 import 'home_screen.dart';
 import 'now_playing_screen.dart';
@@ -17,6 +18,7 @@ Future<void> main() async {
 
   // ✅ AdMob init (must)
   await MobileAds.instance.initialize();
+  InterstitialHelper.instance.preload();
   MobileAds.instance.updateRequestConfiguration(
     RequestConfiguration(testDeviceIds: const []),
   );

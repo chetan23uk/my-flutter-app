@@ -44,10 +44,12 @@ class AdThrottle {
   bool canShowInterstitial() {
     final now = DateTime.now();
     if (_lastInterstitialShownAt == null) return true;
-    return now.difference(_lastInterstitialShownAt!).inSeconds >= 40;
+    return now.difference(_lastInterstitialShownAt!).inSeconds >= 50; // ✅ was 40
   }
 
   void markInterstitialShown() {
     _lastInterstitialShownAt = DateTime.now();
   }
 }
+
+

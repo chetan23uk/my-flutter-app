@@ -14,7 +14,9 @@ class FolderTile extends StatelessWidget {
   final String path;
   final int songCount;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final ValueChanged<FolderMenu>? onMenuAction;
+
 
   const FolderTile({
     super.key,
@@ -22,7 +24,8 @@ class FolderTile extends StatelessWidget {
     required this.path,
     required this.songCount,
     this.onTap,
-    this.onMenuAction,
+    this.onLongPress,
+    this.onMenuAction, required Null Function(Action) onMenu,
   });
 
   @override
@@ -32,6 +35,7 @@ class FolderTile extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(

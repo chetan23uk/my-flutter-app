@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:on_audio_query/on_audio_query.dart';
 
 class MediaDeleteService {
   static const MethodChannel _channel = MethodChannel('youplay/media_delete');
@@ -11,21 +12,17 @@ class MediaDeleteService {
         'deleteUris',
         {'uris': uriStrings},
       );
-      // ignore: avoid_print
-      print('MediaDelete result=$result firstUri=${uriStrings.first}');
       return result ?? false;
-    } on MissingPluginException catch (e) {
-      // ignore: avoid_print
-      print('MediaDelete MissingPluginException: $e');
+    } on PlatformException {
       return false;
-    } on PlatformException catch (e) {
-      // ignore: avoid_print
-      print('MediaDelete PlatformException: ${e.code} ${e.message}');
-      return false;
-    } catch (e) {
-      // ignore: avoid_print
-      print('MediaDelete error: $e');
+    } catch (_) {
       return false;
     }
+  }
+
+  // ✅ ADD: deleteSongs method (DELETE KE DONO METHOD RAHENGE)
+  static Future<bool> deleteSongs(dynamic context, List<SongModel> songs) async {
+    final uris = songs.map((s) => s.uri ?? "").where((u) => u.isNotEmpty).toList();
+    return await deleteUris(uris);
   }
 }
